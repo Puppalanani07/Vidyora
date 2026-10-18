@@ -1,12 +1,9 @@
 from datetime import datetime, timezone
 import os
 
-import httpx
 from bson import ObjectId
-from flask import Blueprint, jsonify, request
-from google import genai
-from google.genai.errors import APIError
-from google.genai.types import HttpOptions
+from flask import Blueprint, current_app, jsonify, request
+from groq import Groq
 from pymongo import ReturnDocument
 from pymongo.errors import PyMongoError
 
@@ -19,12 +16,21 @@ from app.database import (
 
 
 chat_bp = Blueprint("chat", __name__)
-GEMINI_TIMEOUT_MS = 30_000
 LEARNING_LEVELS = {"beginner", "intermediate", "advanced"}
 
 
 @chat_bp.post("/chat")
 def chat():
+    try:
+        return _handle_chat()
+    except Exception:
+        current_app.logger.exception("Unexpected error while processing a chat request.")
+        return jsonify(
+            {"error": "An unexpected error occurred while processing the chat request."}
+        ), 500
+
+
+def _handle_chat():
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         return jsonify({"error": "Request body must be a JSON object."}), 400
@@ -64,30 +70,32 @@ def chat():
     except PyMongoError:
         return jsonify({"error": "MongoDB is unavailable while preparing the conversation."}), 503
 
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
-        return jsonify({"error": "Gemini is not configured. Set GEMINI_API_KEY in the backend .env file."}), 503
-
-    model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-    prompt = (
-        f"Explain the answer at a {learning_level} learning level. "
-        f"Answer the learner's question clearly:\n\n{message.strip()}"
-    )
+        return jsonify({"error": "Groq is not configured. Set GROQ_API_KEY in the backend .env file."}), 503
 
     try:
-        client = genai.Client(
-            api_key=api_key,
-            http_options=HttpOptions(timeout=GEMINI_TIMEOUT_MS),
+        client = Groq(api_key=api_key)
+        response = client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        f"You are Vidyora, a friendly tutor. Explain at {learning_level} "
+                        "level in simple words."
+                    ),
+                },
+                {"role": "user", "content": message.strip()},
+            ],
         )
-        response = client.models.generate_content(model=model, contents=prompt)
-    except httpx.TimeoutException:
-        return jsonify({"error": "The Gemini request timed out. Please try again."}), 504
-    except (APIError, httpx.RequestError):
-        return jsonify({"error": "The Gemini API request failed. Please try again later."}), 502
+    except Exception:
+        current_app.logger.exception("The Groq API request failed.")
+        return jsonify({"error": "The Groq API request failed. Please try again later."}), 502
 
-    reply = response.text
+    reply = response.choices[0].message.content
     if not reply or not reply.strip():
-        return jsonify({"error": "Gemini returned an empty response. Please try again."}), 502
+        return jsonify({"error": "Groq returned an empty response. Please try again."}), 502
 
     now = datetime.now(timezone.utc)
     assistant_timestamp = datetime.now(timezone.utc)
@@ -138,7 +146,7 @@ def chat():
                 return jsonify({"error": "Conversation not found."}), 404
     except PyMongoError:
         return jsonify({
-            "error": "Gemini generated a reply, but MongoDB could not save the conversation."
+            "error": "Groq generated a reply, but MongoDB could not save the conversation."
         }), 503
 
     return jsonify({"reply": reply, "conversation_id": conversation_id})

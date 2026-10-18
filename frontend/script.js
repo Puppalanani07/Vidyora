@@ -1,5 +1,5 @@
-const API_ROOT = "http://127.0.0.1:5000/api";
-const API_URL = `${API_ROOT}/chat`;
+const API_URL = "http://127.0.0.1:5000";
+const API_ROOT = `${API_URL}/api`;
 
 const form = document.querySelector("#chat-form");
 const input = document.querySelector("#message-input");
@@ -210,14 +210,11 @@ function addLoadingMessage() {
 async function sendMessage(message) {
   const payload = {
     message,
-    learning_level: levelSelect.value,
+    level: levelSelect.value,
   };
-  if (currentConversationId) {
-    payload.conversation_id = currentConversationId;
-  }
 
   try {
-    const response = await fetch(API_URL, {
+    const response = await fetch(`${API_URL}/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -225,23 +222,21 @@ async function sendMessage(message) {
 
     const data = await response.json().catch(() => null);
     if (!response.ok) {
-      const detail = typeof data?.error === "string" ? ` ${data.error}` : "";
-      throw new Error(`Request failed (HTTP ${response.status}).${detail}`);
+      throw new Error(
+        typeof data?.error === "string"
+          ? data.error
+          : `Request failed (HTTP ${response.status}).`,
+      );
     }
 
     if (typeof data?.reply !== "string" || !data.reply.trim()) {
       throw new Error("The server returned an empty or invalid reply.");
     }
 
-    if (typeof data.conversation_id === "string") {
-      currentConversationId = data.conversation_id;
-      loadHistory();
-    }
     addMessage("assistant", data.reply);
-  } catch (error) {
-    const messageText = error instanceof TypeError
-      ? "Could not reach the Vidyora API. Check that Flask is running at 127.0.0.1:5000."
-      : error.message;
+  } catch (err) {
+    console.error("API error:", err);
+    const messageText = err instanceof Error ? err.message : String(err);
     addMessage("assistant", messageText, { isError: true });
   }
 }
