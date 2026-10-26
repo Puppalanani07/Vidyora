@@ -39,7 +39,7 @@ def _handle_chat():
     if not isinstance(message, str) or not message.strip():
         return jsonify({"error": "The 'message' field must be a non-empty string."}), 400
 
-    learning_level = data.get("learning_level", "beginner")
+    learning_level = data.get("level", data.get("learning_level", "beginner"))
     if not isinstance(learning_level, str) or learning_level.lower() not in LEARNING_LEVELS:
         return jsonify({
             "error": "The 'learning_level' field must be beginner, intermediate, or advanced."
@@ -70,14 +70,14 @@ def _handle_chat():
     except PyMongoError:
         return jsonify({"error": "MongoDB is unavailable while preparing the conversation."}), 503
 
-    api_key = os.getenv("GROQ_API_KEY")
+    api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         return jsonify({"error": "Groq is not configured. Set GROQ_API_KEY in the backend .env file."}), 503
 
     try:
         client = Groq(api_key=api_key)
         response = client.chat.completions.create(
-            model="openai/gpt-oss-120b",
+            model="llama-3.3-70b-versatile",
             messages=[
                 {
                     "role": "system",

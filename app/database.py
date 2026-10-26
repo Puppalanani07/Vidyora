@@ -18,8 +18,8 @@ class MongoUnavailableError(Exception):
 
 
 def get_database():
-    uri = os.getenv("MONGODB_URI")
-    database_name = os.getenv("MONGODB_DATABASE")
+    uri = os.environ.get("MONGODB_URI")
+    database_name = os.environ.get("MONGODB_DATABASE")
     if not uri or not database_name:
         raise MongoConfigurationError(
             "Set MONGODB_URI and MONGODB_DATABASE in the backend .env file."

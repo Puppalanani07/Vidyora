@@ -1,5 +1,4 @@
-const API_URL = "http://127.0.0.1:5000";
-const API_ROOT = `${API_URL}/api`;
+const API_BASE = "https://vidyora-ochre.vercel.app";
 
 const form = document.querySelector("#chat-form");
 const input = document.querySelector("#message-input");
@@ -72,12 +71,8 @@ async function loadHistory() {
   sidebarHistory.append(loading.cloneNode(true));
 
   try {
-    const response = await fetch(`${API_ROOT}/conversations`);
-    const data = await response.json().catch(() => null);
-    if (!response.ok) {
-      const detail = typeof data?.error === "string" ? ` ${data.error}` : "";
-      throw new Error(`Could not load saved conversations (HTTP ${response.status}).${detail}`);
-    }
+    const response = await fetch(`${API_BASE}/api/conversations`);
+    const data = await readApiResponse(response, "Could not load saved conversations");
 
     if (!Array.isArray(data?.conversations)) {
       throw new Error("The history API returned an invalid conversation list.");
@@ -99,11 +94,10 @@ async function loadHistory() {
       sidebarHistory.append(createHistoryButton(conversation, true));
     });
   } catch (error) {
+    console.error("Loading conversation history failed:", error);
     const message = document.createElement("p");
     message.className = "history-note history-error";
-    message.textContent = error instanceof TypeError
-      ? "Could not reach the history API. Check that Flask and MongoDB are running."
-      : error.message;
+    message.textContent = getErrorMessage(error);
     historyContent.replaceChildren(message);
     sidebarHistory.replaceChildren(message.cloneNode(true));
   }
@@ -113,13 +107,9 @@ async function openConversation(conversationId) {
   historyContent.setAttribute("aria-busy", "true");
   try {
     const response = await fetch(
-      `${API_ROOT}/conversations/${encodeURIComponent(conversationId)}`,
+      `${API_BASE}/api/conversations/${encodeURIComponent(conversationId)}`,
     );
-    const data = await response.json().catch(() => null);
-    if (!response.ok) {
-      const detail = typeof data?.error === "string" ? ` ${data.error}` : "";
-      throw new Error(`Could not open conversation (HTTP ${response.status}).${detail}`);
-    }
+    const data = await readApiResponse(response, "Could not open conversation");
     if (typeof data?.id !== "string" || !Array.isArray(data.messages)) {
       throw new Error("The history API returned an invalid conversation.");
     }
@@ -132,11 +122,10 @@ async function openConversation(conversationId) {
     navigateTo("home");
     input.focus();
   } catch (error) {
+    console.error("Opening conversation failed:", error);
     const message = document.createElement("p");
     message.className = "history-note history-error";
-    message.textContent = error instanceof TypeError
-      ? "Could not reach the history API. Check that Flask is running."
-      : error.message;
+    message.textContent = getErrorMessage(error);
     historyContent.replaceChildren(message);
   } finally {
     historyContent.removeAttribute("aria-busy");
@@ -193,11 +182,11 @@ function addLoadingMessage() {
 
   const label = document.createElement("span");
   label.className = "message-label";
-  label.textContent = "Vidyora";
+  label.textContent = "Typing...";
 
   const dots = document.createElement("span");
   dots.className = "loading-dots";
-  dots.setAttribute("aria-label", "Thinking");
+  dots.setAttribute("aria-label", "Typing");
   dots.innerHTML = "<span></span><span></span><span></span>";
 
   bubble.append(label, dots);
@@ -207,6 +196,36 @@ function addLoadingMessage() {
   return article;
 }
 
+async function fetchWithTimeout(url, options = {}) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 30000);
+
+  try {
+    return await fetch(`${API_BASE}${url}`, { ...options, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+async function readApiResponse(response, action) {
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = typeof data?.error === "string" ? `: ${data.error}` : "";
+    throw new Error(`${action} (HTTP ${response.status})${detail}`);
+  }
+  return data;
+}
+
+function getErrorMessage(error) {
+  if (error instanceof TypeError) {
+    return `Network/CORS error: ${error.message}`;
+  }
+  if (error instanceof Error && error.name === "AbortError") {
+    return "Request timed out. Please try again.";
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 async function sendMessage(message) {
   const payload = {
     message,
@@ -214,20 +233,13 @@ async function sendMessage(message) {
   };
 
   try {
-    const response = await fetch(`${API_URL}/chat`, {
+    const response = await fetchWithTimeout("/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
 
-    const data = await response.json().catch(() => null);
-    if (!response.ok) {
-      throw new Error(
-        typeof data?.error === "string"
-          ? data.error
-          : `Request failed (HTTP ${response.status}).`,
-      );
-    }
+    const data = await readApiResponse(response, "Chat request failed");
 
     if (typeof data?.reply !== "string" || !data.reply.trim()) {
       throw new Error("The server returned an empty or invalid reply.");
@@ -235,9 +247,8 @@ async function sendMessage(message) {
 
     addMessage("assistant", data.reply);
   } catch (err) {
-    console.error("API error:", err);
-    const messageText = err instanceof Error ? err.message : String(err);
-    addMessage("assistant", messageText, { isError: true });
+    console.error("Chat request failed:", err);
+    addMessage("assistant", getErrorMessage(err), { isError: true });
   }
 }
 

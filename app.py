@@ -1,24 +1,50 @@
-import logging
 import os
 from pathlib import Path
-import sys
 import traceback
 
 from dotenv import load_dotenv
-from groq import Groq
 from flask import Flask, jsonify, request
-from werkzeug.exceptions import HTTPException
 from flask_cors import CORS
+from groq import (
+    APIConnectionError,
+    APITimeoutError,
+    AuthenticationError,
+    Groq,
+    RateLimitError,
+)
+from werkzeug.exceptions import HTTPException
 
 
-load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=True)
+PROJECT_ROOT = Path(__file__).resolve().parent
+FRONTEND_DIR = PROJECT_ROOT / "frontend"
 
-app = Flask(__name__)
-CORS(app, origins=["http://127.0.0.1:5500", "http://localhost:5500"])
+load_dotenv(dotenv_path=PROJECT_ROOT / ".env", override=True)
 
-groq_api_key = os.getenv("GROQ_API_KEY")
-client = Groq(api_key=groq_api_key) if groq_api_key else None
-print("GROQ key loaded" if groq_api_key else "GROQ key MISSING", file=sys.stderr)
+app = Flask(
+    __name__,
+    static_folder=str(FRONTEND_DIR),
+    static_url_path="/frontend",
+)
+CORS(
+    app,
+    origins=[
+        "http://127.0.0.1:5500",
+        "http://localhost:5500",
+        "https://vidyora-ochre.vercel.app",
+    ],
+)
+
+groq_api_key = os.environ.get("GROQ_API_KEY")
+client = (
+    Groq(api_key=groq_api_key, timeout=25.0, max_retries=0)
+    if groq_api_key
+    else None
+)
+print("GROQ key loaded" if groq_api_key else "GROQ key MISSING")
+
+from app.routes.conversations import conversations_bp
+
+app.register_blueprint(conversations_bp, url_prefix="/api")
 
 
 @app.errorhandler(HTTPException)
@@ -28,20 +54,22 @@ def handle_http_error(error):
 
 @app.errorhandler(Exception)
 def handle_unexpected_error(error):
-    app.logger.exception("Unexpected API error.", exc_info=error)
+    traceback.print_exc()
     return jsonify({"error": "An unexpected server error occurred."}), 500
+
+
+@app.get("/")
+def index():
+    return jsonify({"status": "Vidyora API is running"})
 
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok"})
+    return jsonify({"ok": True})
 
 
-@app.route("/chat", methods=["POST", "OPTIONS"])
+@app.post("/chat")
 def chat():
-    if request.method == "OPTIONS":
-        return jsonify({"status": "ok"})
-
     try:
         data = request.get_json(silent=True)
         if not isinstance(data, dict):
@@ -56,10 +84,12 @@ def chat():
             return jsonify({"error": "Level must be a non-empty string."}), 400
 
         if client is None:
-            raise RuntimeError("GROQ_API_KEY is missing. Add it to the project .env file.")
+            return jsonify({
+                "error": "Groq is not configured. Set the GROQ_API_KEY environment variable."
+            }), 503
 
         response = client.chat.completions.create(
-            model="openai/gpt-oss-120b",
+            model="llama-3.3-70b-versatile",
             messages=[
                 {
                     "role": "system",
@@ -76,12 +106,28 @@ def chat():
             raise RuntimeError("Groq returned an empty response.")
 
         return jsonify({"reply": reply.strip()})
+    except AuthenticationError:
+        traceback.print_exc()
+        return jsonify({
+            "error": "Invalid Groq API key. Check GROQ_API_KEY in the deployment environment."
+        }), 401
+    except RateLimitError:
+        traceback.print_exc()
+        return jsonify({"error": "Too many requests, try again in a minute"}), 429
+    except APITimeoutError:
+        traceback.print_exc()
+        return jsonify({"error": "The request timed out. Please try again."}), 504
+    except (APIConnectionError, ConnectionError):
+        traceback.print_exc()
+        return jsonify({"error": "Could not connect to Groq. Check your internet connection and try again."}), 502
+    except TimeoutError:
+        traceback.print_exc()
+        return jsonify({"error": "The request timed out. Please try again."}), 504
     except Exception as e:
-        app.logger.exception("Unexpected error while processing a chat request.")
         traceback.print_exc()
         return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    app.run(host="127.0.0.1", port=5000, debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
